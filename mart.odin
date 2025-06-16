@@ -223,6 +223,7 @@ state: struct {
 	auctioneer: uint,
 	artists: []Artist,
 	schedule: ^Deal_Schedule,
+	reward_base: []int,
 	reward: []int,
 	round_played: []uint,
 	players: []Player,
@@ -287,6 +288,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 
 	state.round_played = make([]uint, len(conf.artists))
 	state.reward = make([]int, len(conf.artists))
+	state.reward_base = conf.scores
 
 	// shuffle the deck
 	rand.shuffle(state.deck)
@@ -762,6 +764,10 @@ run_auction :: proc() {
 play_round :: proc() {
 	fmt.printfln("=== Round %d ===", state.round)
 	mem.zero_slice(state.round_played)
+	for &p in state.players {
+		mem.zero_slice(p.bought)
+	}
+
 	popularity_overflow :: proc() -> bool {
 		for v in state.round_played {
 			if v == 5 { return true }
@@ -772,7 +778,44 @@ play_round :: proc() {
 		run_auction()
 		state.auctioneer = (state.auctioneer + 1) % len(state.players)
 	}
-	
+
+	curr := 0
+	last := len(state.reward_base)
+	if last > len(state.round_played) {
+		last = len(state.round_played)
+	}
+
+	// TODO: just sort pairs of (artist, played)
+	for &rp in state.round_played {
+		rp += 1
+	}
+
+	for curr < last {
+		idx := 0
+		max := uint(0)
+		for rp, i in state.round_played {
+			if rp > max {
+				max = rp
+				idx = i
+			}
+		}
+		fmt.printfln("%d place - %s", curr + 1, state.artists[idx].name)
+
+		state.reward[idx] += state.reward_base[curr]
+		for &p in state.players {
+			prize := int(p.bought[idx]) * state.reward[curr]
+			p.money += prize
+			fmt.printfln("Player %d received $%d for their %d %ss",
+				p.id, prize, p.bought[idx],
+				state.artists[idx].name)
+			p.strat.update(p.strat.ctx, Resource_Event {
+				money = prize,
+			})
+		}
+
+		state.round_played[idx] = 0
+		curr += 1
+	}
 }
 
 main :: proc() {
@@ -850,5 +893,9 @@ main :: proc() {
 		deal_round()
 		play_round()
 	}
-	fmt.println("Hellope")
+
+	fmt.println("")
+	for p in state.players {
+		fmt.printfln("Player %d ended with $%d", p.id, p.money)
+	}
 }
