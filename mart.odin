@@ -23,15 +23,6 @@ Card :: struct {
 	public: bool,
 }
 
-Strategy :: struct {
-	ctx: rawptr,
-	init: proc(^rawptr, uint),
-	update: proc(rawptr, Event),
-	bid: proc(rawptr) -> int,
-	auction: proc(rawptr, Auction_Event, bool) -> Auction_Event,
-	deinit: proc(rawptr),
-}
-
 Player :: struct {
 	id: uint,
 	cards: [dynamic]Card,
@@ -109,12 +100,23 @@ card_str :: proc(card_id: uint) -> string {
 		state.artists[card.artist].name, auction_names[card.type])
 }
 
+// TODO: make this robust against querying cards that aren't ours
+get_card :: proc(card_id: uint) -> Card {
+	for c in state.deck {
+		if c.id == card_id {
+			return c
+		}
+	}
+
+	return Card{}
+}
+
 main :: proc() {
 	strats := []Strategy {
-		first_card_all_in,
-		first_card_all_in,
-		first_card_all_in,
-		first_card_all_in,
+		random_player,
+		random_player,
+		random_player,
+		random_player,
 	}
 
 	setup_game(mart_conf, strats);
