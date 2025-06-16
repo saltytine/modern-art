@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:math/rand"
+import "core:mem"
 import "core:os"
 
 mart_conf :: Config {
@@ -122,6 +123,7 @@ mart_conf :: Config {
 			},
 		},
 	},
+	scores = []int{ 30, 20, 10 },
 }
 
 Auction :: enum { Open, Offer, Secret, Fixed, Double }
@@ -149,7 +151,7 @@ Strategy :: struct {
 	ctx: rawptr,
 	init: proc(^rawptr, uint),
 	update: proc(rawptr, Event),
-	bid: proc(rawptr) -> uint,
+	bid: proc(rawptr) -> int,
 	auction: proc(rawptr, Auction_Event, bool) -> Auction_Event,
 	deinit: proc(rawptr),
 }
@@ -157,14 +159,14 @@ Strategy :: struct {
 Player :: struct {
 	id: uint,
 	cards: [dynamic]Card,
-	bought: [dynamic]Card,
-	money: uint,
+	bought: []uint,
+	money: int,
 	strat: Strategy,
 }
 
 Bid_Event :: struct {
 	player: uint,
-	amount: uint,
+	amount: int,
 }
 
 Pass_Event :: struct {
@@ -174,7 +176,7 @@ Pass_Event :: struct {
 Win_Event :: struct {
 	player: uint,
 	card: uint,
-	amount: uint,
+	amount: int,
 }
 
 Auction_Event :: struct {
@@ -182,12 +184,12 @@ Auction_Event :: struct {
 	card: uint,
 	double: uint,
 	is_double: bool,
-	price: uint,
+	price: int,
 }
 
 Resource_Event :: struct {
 	cards: []uint,
-	money: uint,
+	money: int,
 }
 
 Event :: union {
@@ -200,7 +202,7 @@ Event :: union {
 
 Resources :: struct {
 	cards: uint,
-	money: uint,
+	money: int,
 }
 
 Deal_Schedule :: struct {
@@ -211,6 +213,7 @@ Deal_Schedule :: struct {
 Config :: struct {
 	artists: []Artist,
 	schedule: []Deal_Schedule,
+	scores: []int,
 }
 
 state: struct {
@@ -220,6 +223,8 @@ state: struct {
 	auctioneer: uint,
 	artists: []Artist,
 	schedule: ^Deal_Schedule,
+	reward: []int,
+	round_played: []uint,
 	players: []Player,
 	events: [dynamic]Event,
 }
@@ -280,6 +285,9 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 		}
 	}
 
+	state.round_played = make([]uint, len(conf.artists))
+	state.reward = make([]int, len(conf.artists))
+
 	// shuffle the deck
 	rand.shuffle(state.deck)
 
@@ -289,7 +297,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 		player.id = uint(i)
 		player.cards =
 			make([dynamic]Card, 0, state.schedule.dealt[0].cards)
-		player.bought = make([dynamic]Card)
+		player.bought = make([]uint, len(conf.artists))
 		player.strat = strats[i]
 		player.strat.init(&player.strat.ctx, player.id)
 	}
@@ -298,6 +306,11 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 
 packup_game :: proc() {
 	delete(state.deck)
+	for &p in state.players {
+		p.strat.deinit(&p.strat.ctx)
+		delete(p.cards)
+		delete(p.bought)
+	}
 	delete(state.players)
 	free(state.schedule)
 	delete(state.events)
@@ -322,7 +335,7 @@ deal_round :: proc() {
 		player.money += dealing.money
 		player.strat.update(player.strat.ctx, Resource_Event {
 			cards = card_ids,
-			money = dealing.money,
+			money = int(dealing.money),
 		})
 	}
 	state.round += 1
@@ -332,10 +345,6 @@ update_players :: proc(ev: Event) {
 	for player in state.players {
 		player.strat.update(player.strat.ctx, ev)
 	}
-}
-
-next_auctioneer :: proc() {
-	state.auctioneer = (state.auctioneer + 1) % len(state.players)
 }
 
 find_card_num :: proc(player: Player, card: uint) -> (uint, bool) {
@@ -357,13 +366,59 @@ card_str :: proc(card_id: uint) -> string {
 		state.artists[card.artist].name, auction_names[card.type])
 }
 
-run_auction :: proc(auction: Auction) {
+is_valid_auction :: proc(auction: Auction_Event) -> string {
+	if auction.player >= len(state.players) {
+		return fmt.aprintf("player %d is not a valid player",
+			auction.player)
+	}
+	if auction.card >= len(state.deck) {
+		return fmt.aprintf("card %d is not a valid card", auction.card)
+	}
+	if auction.is_double && auction.double >= len(state.deck) {
+		return fmt.aprintf("card %d is not a valid card",
+			auction.double)
+	}
+
+	card := state.deck[auction.card]
+	if card.type != .Double && auction.is_double {
+		str := card_str(auction.double)
+		defer delete(str)
+		return fmt.aprintf("cannot hold a double auction with %s", str)
+	}
+
+	switch card.type {
+	case .Open:
+	case .Secret:
+	case .Offer:
+	case .Fixed:
+		if state.players[auction.player].money < auction.price {
+			return fmt.aprintf("does not have $%d", auction.price)
+		}
+	case .Double:
+		if !auction.is_double {
+			return ""
+		}
+		double := state.deck[auction.double]
+		if double.type == .Double {
+			return fmt.aprintf(
+				"cannot hold an auction with two double cards")
+		}
+		if card.artist == double.artist {
+			a1 := card_str(auction.card)
+			a2 := card_str(auction.double)
+			defer delete(a1)
+			defer delete(a2)
+			return fmt.aprintf("%s and %s are different artists",
+				a1, a2)
+		}
+	}
+
+	return ""
 }
 
-play_round :: proc() {
-	fmt.printfln("=== Round %d ===", state.round)
-
+run_auction :: proc() {
 	max_tries :: 3
+	num_players := uint(len(state.players))
 	auctioneer_num := state.auctioneer
 	auctioneer := state.players[auctioneer_num]
 	auction: Auction_Event
@@ -379,19 +434,36 @@ play_round :: proc() {
 			continue
 		}
 
+		if str := is_valid_auction(auction); str != "" {
+			defer delete(str)
+			fmt.eprintfln("Player %d tried an invalid auction: %s",
+				auctioneer_num, str)
+			continue
+		}
+
 		card_num, ok1 := find_card_num(auctioneer, auction.card)
 		if !ok1 {
 			str := card_str(auction.card)
+			defer delete(str)
 			fmt.eprintfln("Player %d tried to auction a card (%s)" +
 				" that they don't have", auctioneer.id, str)
-			delete(str)
 			continue
 		}
 
 		if !auction.is_double {
 			unordered_remove(&state.players[auctioneer_num].cards,
 				card_num)
-			state.deck[card_num].public = true
+			state.deck[auction.card].public = true
+			artist := state.deck[auction.card].artist
+			state.round_played[artist] += 1
+			if state.round_played[artist] == 5 {
+				update_players(auction)
+				str := card_str(auction.card)
+				defer delete(str)
+				fmt.printfln("Round ended with Player %d" +
+					" showing %s", auctioneer.id, str)
+				return
+			}
 			success = true
 			break
 		}
@@ -399,18 +471,41 @@ play_round :: proc() {
 		double_num, ok2 := find_card_num(auctioneer, auction.double)
 		if !ok2 {
 			str := card_str(auction.double)
+			defer delete(str)
 			fmt.eprintfln("Player %d tried to auction a card (%s)" +
 				" that they don't have", auctioneer.id, str)
-			delete(str)
 			continue
 		}
 
 		
 		unordered_remove(&state.players[auctioneer_num].cards, card_num)
+		state.deck[auction.card].public = true
+		card_artist := state.deck[auction.card].artist
+		state.round_played[card_artist] += 1
+		if state.round_played[card_artist] == 5 {
+			update_players(auction)
+			str := card_str(auction.card)
+			defer delete(str)
+			fmt.printfln("Round ended with Player %d showing %s",
+				auctioneer.id, str)
+			return
+		}
+
 		unordered_remove(&state.players[auctioneer_num].cards,
 			double_num)
-		state.deck[auction.card].public = true
 		state.deck[auction.double].public = true
+		double_artist := state.deck[auction.double].artist
+		state.round_played[double_artist] += 1
+		if state.round_played[double_artist] == 5 {
+			update_players(auction)
+			str_card := card_str(auction.card)
+			defer delete(str_card)
+			str_double := card_str(auction.double)
+			defer delete(str_double)
+			fmt.printfln("Round ended with Player %d showing %s" +
+				" and %s", auctioneer.id, str_card, str_double)
+			return
+		}
 		success = true
 		break
 	}
@@ -423,21 +518,20 @@ play_round :: proc() {
 
 	update_players(auction)
 	for state.deck[auction.card].type == .Double && !auction.is_double {
-		auctioneer_num = (auctioneer_num + 1) % len(state.players)
+		auctioneer_num = (auctioneer_num + 1) % num_players
 		auctioneer = state.players[auctioneer_num]
 		if auctioneer_num == state.auctioneer {
 			str := card_str(auction.card)
+			defer delete(str)
 			fmt.printfln("Player %d got %s for free",
 				auctioneer.id, str)
-			delete(str)
-			append(&state.players[auctioneer_num].bought,
-				state.deck[auction.card])
+			artist := state.deck[auction.card].artist
+			state.players[auctioneer_num].bought[artist] += 1
 			update_players(Win_Event {
 				player = auctioneer_num,
 				card = auction.card,
 				amount = 0,
 			})
-			next_auctioneer()
 			return
 		}
 
@@ -445,8 +539,9 @@ play_round :: proc() {
 		second_auction := auctioneer.strat.auction(
 			auctioneer.strat.ctx, auction, true)
 		card_num, ok := find_card_num(auctioneer, second_auction.double)
-		if !ok || state.deck[second_auction.double].type == .Double ||
-				second_auction.card != auction.card ||
+		err := is_valid_auction(second_auction)
+		defer delete(err)
+		if !ok || err != "" || second_auction.card != auction.card ||
 				second_auction.player != auctioneer.id {
 			continue
 		}
@@ -457,38 +552,240 @@ play_round :: proc() {
 	}
 
 	str := card_str(auction.card)
-	auction_str := fmt.aprintf("Auctioning %s", str)
-	delete(str)
+	defer delete(str)
+	auction_str := fmt.aprintf("Player %d is auctioning %s",
+		auctioneer_num, str)
+	defer delete(auction_str)
 	if auction.is_double {
 		str := card_str(auction.double)
+		defer delete(str)
 		tmp := fmt.aprintf("%s, %s", auction_str, str)
-		delete(str)
 		delete(auction_str)
 		auction_str = tmp
 	}
 	fmt.println(auction_str)
-	delete(auction_str)
-
 	update_players(auction)
+
+	winner := auctioneer_num
+	winning_bid := 0
+
+	type: Auction
 	if auction.is_double {
-		run_auction(state.deck[auction.double].type)
+		type = state.deck[auction.double].type
 	} else {
-		run_auction(state.deck[auction.card].type)
+		type = state.deck[auction.card].type
 	}
-	next_auctioneer()
+
+	switch type {
+	case .Double:
+		fmt.eprintln("internal error: attempting to bid on a double" +
+			" auction card")
+		os.exit(1)
+	case .Open:
+		outer: for {
+			for i in 1..=num_players {
+				bidder_num := (winner + uint(i)) % num_players
+				bidder := state.players[bidder_num]
+				bid := bidder.strat.bid(bidder.strat.ctx)
+				if bid > bidder.money {
+					fmt.eprintfln("Player %d tried to bid" +
+						" $%d but they only have $%d",
+						bidder.id, bid, bidder.money)
+					bid = 0
+				}
+
+				if bid > winning_bid {
+					fmt.printfln("Player %d bidding $%d",
+						bidder.id, bid)
+					winner = bidder_num
+					winning_bid = bid
+					update_players(Bid_Event {
+						player = bidder.id,
+						amount = bid,
+					})
+					continue outer
+				}
+			}
+
+			for i in 1..<num_players {
+				bidder_num := (winner + uint(i)) % num_players
+				bidder := state.players[bidder_num]
+				bid := bidder.strat.bid(bidder.strat.ctx)
+				if bid > bidder.money {
+					fmt.eprintfln("Player %d tried to bid" +
+						" $%d but they only have $%d",
+						bidder.id, bid, bidder.money)
+					bid = 0
+				}
+
+				if bid > winning_bid {
+					fmt.printfln("Player %d bidding $%d",
+						bidder.id, bid)
+					winner = bidder_num
+					winning_bid = bid
+					update_players(Bid_Event {
+						player = bidder.id,
+						amount = bid,
+					})
+					continue outer
+				}
+				
+			}
+
+			break outer
+		}
+	case .Offer:
+		for i in 1..=num_players {
+			bidder_num := (auctioneer_num + uint(i)) % num_players
+			bidder := state.players[bidder_num]
+			bid := bidder.strat.bid(bidder.strat.ctx)
+			if bid > bidder.money {
+				fmt.eprintfln("Player %d tried to bid $%d but" +
+					" they only have $%d", bidder.id, bid,
+					bidder.money)
+				bid = 0
+			}
+
+			if bid > winning_bid {
+				fmt.printfln("Player %d bidding $%d",
+					bidder.id, bid)
+				winner = bidder.id
+				winning_bid = bid
+				update_players(Bid_Event {
+					player = bidder.id,
+					amount = bid,
+				})
+			} else {
+				fmt.printfln("Player %d passing", bidder.id)
+				update_players(Pass_Event {
+					player = bidder.id,
+				})
+			}
+		}
+	case .Fixed:
+		winning_bid = auction.price
+		for i in 1..<num_players {
+			bidder_num := (auctioneer_num + uint(i)) % num_players
+			bidder := state.players[bidder_num]
+			bid := bidder.strat.bid(bidder.strat.ctx)
+			if bid > bidder.money {
+				fmt.eprintfln("Player %d tried to bid $%d but" +
+					" they only have $%d", bidder.id, bid,
+					bidder.money)
+				bid = 0
+			}
+
+			if bid >= winning_bid {
+				update_players(Bid_Event {
+					player = bidder.id,
+					amount = winning_bid,
+				})
+			} else {
+				update_players(Pass_Event {
+					player = bidder.id,
+				})
+			}
+
+			if bid >= winning_bid {
+				fmt.printfln("Player %d bidding $%d",
+						bidder.id, bid)
+				winner = bidder.id
+				break
+			} else {
+				fmt.printfln("Player %d passing", bidder.id)
+			}
+		}
+	case .Secret:
+		bids := make([]int, num_players)
+		defer delete(bids)
+		for i in 0..<num_players {
+			bidder_num := (auctioneer_num + uint(i)) % num_players
+			bidder := state.players[bidder_num]
+			bid := bidder.strat.bid(bidder.strat.ctx)
+			if bid > bidder.money {
+				fmt.eprintfln("Player %d tried to bid $%d but" +
+					" they only have $%d", bidder.id, bid,
+					bidder.money)
+				bid = 0
+			}
+			if bid > winning_bid {
+				winning_bid = bid
+				winner = bidder.id
+			}
+			bids[bidder_num] = bid
+		}
+
+		for b, i in bids {
+			fmt.printfln("Player %d bid $%d", i, b)
+		}
+
+		for b, i in bids {
+			if b == 0 {
+				update_players(Pass_Event {
+					 player = uint(i),
+				})
+			} else {
+				update_players(Bid_Event {
+					 player = uint(i),
+					 amount = b,
+				})
+			}
+		}
+	}
+
+	fmt.printfln("Player %d won the bid for $%d", winner, winning_bid)
+	update_players(Win_Event {
+		player = winner,
+		amount = winning_bid,
+	})
+
+	artist := state.deck[auction.card].artist
+	state.players[winner].bought[artist] += 1
+	if auction.is_double {
+		state.players[winner].bought[artist] += 1
+	}
+	state.players[winner].money -= winning_bid
+	wp := state.players[winner]
+	wp.strat.update(wp.strat.ctx, Resource_Event {
+		money = -winning_bid,
+	})
+
+	if winner != auctioneer_num {
+		state.players[auctioneer_num].money += winning_bid
+		auctioneer.strat.update(auctioneer.strat.ctx, Resource_Event {
+			money = winning_bid,
+		})
+	}
+
+}
+
+play_round :: proc() {
+	fmt.printfln("=== Round %d ===", state.round)
+	mem.zero_slice(state.round_played)
+	popularity_overflow :: proc() -> bool {
+		for v in state.round_played {
+			if v == 5 { return true }
+		}
+		return false
+	}
+	for !popularity_overflow() {
+		run_auction()
+		state.auctioneer = (state.auctioneer + 1) % len(state.players)
+	}
+	
 }
 
 main :: proc() {
-	Null_Ctx :: struct {
+	FCAI_Ctx :: struct {
 		cards: [dynamic]uint,
 		id: uint,
-		money: uint,
+		money: int,
 	}
-	null_strat :: Strategy {
+	first_card_all_in :: Strategy {
 		ctx = nil,
 		init = proc(ctx: ^rawptr, us: uint) {
-			c := new(Null_Ctx)
-			c^ = Null_Ctx {
+			c := new(FCAI_Ctx)
+			c^ = FCAI_Ctx {
 				id = us,
 				cards = make([dynamic]uint),
 				money = 0,
@@ -496,44 +793,55 @@ main :: proc() {
 			ctx^ = c
 		},
 		update = proc(ctx: rawptr, event: Event) {
-			us := cast(^Null_Ctx) ctx
-			switch ev in event {
+			us := cast(^FCAI_Ctx) ctx
+			#partial switch ev in event {
 			case Resource_Event:
 				append(&us.cards, ..ev.cards)
 				us.money += ev.money
 				delete(ev.cards)
-			case Bid_Event:
-			case Pass_Event:
-			case Win_Event:
 			case Auction_Event:
+				if ev.player != us.id { return }
+				for c, i in us.cards {
+					if c == ev.card {
+						unordered_remove(&us.cards, i)
+						break
+					}
+				}
+				if !ev.is_double { return }
+				for c, i in us.cards {
+					if c == ev.double {
+						unordered_remove(&us.cards, i)
+						break
+					}
+				}
 			}
 		},
-		bid = proc(ctx: rawptr) -> uint {
-			us := cast(^Null_Ctx) ctx
+		bid = proc(ctx: rawptr) -> int {
+			us := cast(^FCAI_Ctx) ctx
 			return us.money
 		},
 		auction = proc(ctx: rawptr, _: Auction_Event, _: bool) \
 				-> Auction_Event {
-			us := cast(^Null_Ctx) ctx
+			us := cast(^FCAI_Ctx) ctx
 			return Auction_Event {
 				player = us.id,
 				card = us.cards[0],
 				double = 0,
 				is_double = false,
-				price = 1,
+				price = us.money,
 			}
 		},
 		deinit = proc(ctx: rawptr) {
-			us := cast(^Null_Ctx) ctx
+			us := cast(^FCAI_Ctx) ctx
 			delete(us.cards)
 			free(us)
 		}
 	}
 	strats := []Strategy {
-		null_strat,
-		null_strat,
-		null_strat,
-		null_strat,
+		first_card_all_in,
+		first_card_all_in,
+		first_card_all_in,
+		first_card_all_in,
 	}
 
 	setup_game(mart_conf, strats);
