@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:log"
 import "core:math/rand"
 import "core:mem"
 import "core:os"
@@ -62,6 +63,8 @@ update_players :: proc(ev: Event) {
 }
 
 setup_game :: proc(conf: Config, strats: []Strategy) {
+	state.pos = 0
+	state.round = 0
 	state.artists = conf.artists
 
 	// create the deck
@@ -85,7 +88,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 	}
 
 	if state.schedule == nil {
-		fmt.eprintfln("config doesn't have a game for %d players",
+		log.errorf("config doesn't have a game for %d players",
 	     		len(strats))
 	     	os.exit(1)
 	}
@@ -96,7 +99,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 	}
 
 	if cards_rounds >= num_cards {
-		fmt.eprintfln("bad config. Deal schedule expected %d cards," +
+		log.errorf("bad config. Deal schedule expected %d cards," +
 			" but artists only have %d cards total.",
 			cards_rounds, num_cards)
 		os.exit(1)
@@ -134,26 +137,31 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 			make([dynamic]Card, 0, state.schedule.dealt[0].cards)
 		player.bought = make([]uint, len(conf.artists))
 		player.strat = strats[i]
-		player.strat.init(&player.strat.ctx, player.id)
+		player.strat.init(&player.strat.ctx, Strategy_Setup {
+			id = player.id,
+			conf = conf,
+			num_players = len(state.players),
+		})
 	}
 	deal_round()
 }
 
 packup_game :: proc() {
-	delete(state.deck)
 	for &p in state.players {
 		p.strat.deinit(&p.strat.ctx)
 		delete(p.cards)
 		delete(p.bought)
 	}
 	delete(state.players)
+	delete(state.deck)
 	free(state.schedule)
 	delete(state.events)
+	delete(state.reward)
 }
 
 deal_round :: proc() {
 	if state.round >= len(state.schedule.dealt) {
-		fmt.eprintfln("attempted to play round %d when schedule only" +
+		log.errorf("attempted to play round %d when schedule only" +
 			" supports %d rounds",
 			state.round + 1, len(state.schedule.dealt))
 		os.exit(1)
@@ -188,7 +196,7 @@ run_auction :: proc() {
 		auction = auctioneer.strat.auction(
 			auctioneer.strat.ctx, Auction_Event{}, false)
 		if auction.player != auctioneer.id {
-			fmt.eprintfln("Player %d attempted to auction on" +
+			log.errorf("Player %d attempted to auction on" +
 				" behalf of player %d",
 				auctioneer.id, auction.player)
 			continue
@@ -196,7 +204,7 @@ run_auction :: proc() {
 
 		if str := is_valid_auction(auction); str != "" {
 			defer delete(str)
-			fmt.eprintfln("Player %d tried an invalid auction: %s",
+			log.errorf("Player %d tried an invalid auction: %s",
 				auctioneer_num, str)
 			continue
 		}
@@ -205,7 +213,7 @@ run_auction :: proc() {
 		if !ok1 {
 			str := card_str(auction.card)
 			defer delete(str)
-			fmt.eprintfln("Player %d tried to auction a card (%s)" +
+			log.errorf("Player %d tried to auction a card (%s)" +
 				" that they don't have", auctioneer.id, str)
 			continue
 		}
@@ -220,7 +228,7 @@ run_auction :: proc() {
 				update_players(auction)
 				str := card_str(auction.card)
 				defer delete(str)
-				fmt.printfln("Round ended with Player %d" +
+				log.infof("Round ended with Player %d" +
 					" showing %s", auctioneer.id, str)
 				return
 			}
@@ -232,7 +240,7 @@ run_auction :: proc() {
 		if !ok2 {
 			str := card_str(auction.double)
 			defer delete(str)
-			fmt.eprintfln("Player %d tried to auction a card (%s)" +
+			log.errorf("Player %d tried to auction a card (%s)" +
 				" that they don't have", auctioneer.id, str)
 			continue
 		}
@@ -248,7 +256,7 @@ run_auction :: proc() {
 			update_players(auction)
 			str := card_str(auction.card)
 			defer delete(str)
-			fmt.printfln("Round ended with Player %d showing %s",
+			log.infof("Round ended with Player %d showing %s",
 				auctioneer.id, str)
 			return
 		}
@@ -256,7 +264,7 @@ run_auction :: proc() {
 		double_num, ok2 = find_card_num(auctioneer, auction.double)
 		if !ok2 {
 			str := card_str(auction.double)
-			fmt.eprintfln("internal error: player %d magically" +
+			log.errorf("internal error: player %d magically" +
 				" lost a card (%s)", auctioneer_num,
 				str)
 			os.exit(1)
@@ -272,7 +280,7 @@ run_auction :: proc() {
 			defer delete(str_card)
 			str_double := card_str(auction.double)
 			defer delete(str_double)
-			fmt.printfln("Round ended with Player %d showing %s" +
+			log.infof("Round ended with Player %d showing %s" +
 				" and %s", auctioneer.id, str_card, str_double)
 			return
 		}
@@ -281,25 +289,25 @@ run_auction :: proc() {
 	}
 
 	if !success {
-		fmt.eprintfln("Player %d could not play a valid card",
+		log.errorf("Player %d could not play a valid card",
 			auctioneer.id)
 		os.exit(1)
 	}
 
-	update_players(auction)
 	for state.deck[auction.card].type == .Double && !auction.is_double {
 		auctioneer_num = (auctioneer_num + 1) % num_players
 		auctioneer = state.players[auctioneer_num]
 		if auctioneer_num == state.auctioneer {
 			str := card_str(auction.card)
 			defer delete(str)
-			fmt.printfln("Player %d got %s for free",
+			log.infof("Player %d got %s for free",
 				auctioneer.id, str)
 			artist := state.deck[auction.card].artist
 			state.players[auctioneer_num].bought[artist] += 1
+			update_players(auction)
 			update_players(Win_Event {
 				player = auctioneer_num,
-				card = auction.card,
+				auction = auction,
 				amount = 0,
 			})
 			return
@@ -334,7 +342,7 @@ run_auction :: proc() {
 		delete(auction_str)
 		auction_str = tmp
 	}
-	fmt.println(auction_str)
+	log.info(auction_str)
 	update_players(auction)
 
 	winner := auctioneer_num
@@ -359,14 +367,14 @@ run_auction :: proc() {
 				bidder := state.players[bidder_num]
 				bid := bidder.strat.bid(bidder.strat.ctx)
 				if bid > bidder.money {
-					fmt.eprintfln("Player %d tried to bid" +
+					log.errorf("Player %d tried to bid" +
 						" $%d but they only have $%d",
 						bidder.id, bid, bidder.money)
 					bid = 0
 				}
 
 				if bid > winning_bid {
-					fmt.printfln("Player %d bidding $%d",
+					log.infof("Player %d bidding $%d",
 						bidder.id, bid)
 					winner = bidder_num
 					winning_bid = bid
@@ -383,14 +391,14 @@ run_auction :: proc() {
 				bidder := state.players[bidder_num]
 				bid := bidder.strat.bid(bidder.strat.ctx)
 				if bid > bidder.money {
-					fmt.eprintfln("Player %d tried to bid" +
+					log.errorf("Player %d tried to bid" +
 						" $%d but they only have $%d",
 						bidder.id, bid, bidder.money)
 					bid = 0
 				}
 
 				if bid > winning_bid {
-					fmt.printfln("Player %d bidding $%d",
+					log.infof("Player %d bidding $%d",
 						bidder.id, bid)
 					winner = bidder_num
 					winning_bid = bid
@@ -411,14 +419,14 @@ run_auction :: proc() {
 			bidder := state.players[bidder_num]
 			bid := bidder.strat.bid(bidder.strat.ctx)
 			if bid > bidder.money {
-				fmt.eprintfln("Player %d tried to bid $%d but" +
+				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
 					bidder.money)
 				bid = 0
 			}
 
 			if bid > winning_bid {
-				fmt.printfln("Player %d bidding $%d",
+				log.infof("Player %d bidding $%d",
 					bidder.id, bid)
 				winner = bidder.id
 				winning_bid = bid
@@ -427,7 +435,7 @@ run_auction :: proc() {
 					amount = bid,
 				})
 			} else {
-				fmt.printfln("Player %d passing", bidder.id)
+				log.infof("Player %d passing", bidder.id)
 				update_players(Pass_Event {
 					player = bidder.id,
 				})
@@ -440,7 +448,7 @@ run_auction :: proc() {
 			bidder := state.players[bidder_num]
 			bid := bidder.strat.bid(bidder.strat.ctx)
 			if bid > bidder.money {
-				fmt.eprintfln("Player %d tried to bid $%d but" +
+				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
 					bidder.money)
 				bid = 0
@@ -458,12 +466,12 @@ run_auction :: proc() {
 			}
 
 			if bid >= winning_bid {
-				fmt.printfln("Player %d bidding $%d",
+				log.infof("Player %d bidding $%d",
 						bidder.id, auction.price)
 				winner = bidder.id
 				break
 			} else {
-				fmt.printfln("Player %d passing", bidder.id)
+				log.infof("Player %d passing", bidder.id)
 			}
 		}
 	case .Secret:
@@ -474,7 +482,7 @@ run_auction :: proc() {
 			bidder := state.players[bidder_num]
 			bid := bidder.strat.bid(bidder.strat.ctx)
 			if bid > bidder.money {
-				fmt.eprintfln("Player %d tried to bid $%d but" +
+				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
 					bidder.money)
 				bid = 0
@@ -487,7 +495,7 @@ run_auction :: proc() {
 		}
 
 		for b, i in bids {
-			fmt.printfln("Player %d bid $%d", i, b)
+			log.infof("Player %d bid $%d", i, b)
 		}
 
 		for b, i in bids {
@@ -504,10 +512,11 @@ run_auction :: proc() {
 		}
 	}
 
-	fmt.printfln("Player %d won the bid for $%d", winner, winning_bid)
+	log.infof("Player %d won the bid for $%d", winner, winning_bid)
 	update_players(Win_Event {
 		player = winner,
 		amount = winning_bid,
+		auction = auction,
 	})
 
 	artist := state.deck[auction.card].artist
@@ -531,7 +540,7 @@ run_auction :: proc() {
 }
 
 play_round :: proc() {
-	fmt.printfln("=== Round %d ===", state.round)
+	log.infof("=== Round %d ===", state.round)
 	mem.zero_slice(state.round_played)
 	for &p in state.players {
 		mem.zero_slice(p.bought)
@@ -578,11 +587,6 @@ play_round :: proc() {
 		last = len(state.round_played)
 	}
 
-	// TODO: just sort pairs of (artist, played)
-	for &rp in state.round_played {
-		rp += 1
-	}
-
 	for curr < last {
 		idx := 0
 		max := uint(0)
@@ -592,13 +596,17 @@ play_round :: proc() {
 				idx = i
 			}
 		}
-		fmt.printfln("%d place - %s", curr + 1, state.artists[idx].name)
+
+		if max == 0 {
+			break
+		}
+		log.infof("%d place - %s", curr + 1, state.artists[idx].name)
 
 		state.reward[idx] += state.reward_base[curr]
 		for &p in state.players {
 			prize := int(p.bought[idx]) * state.reward[idx]
 			p.money += prize
-			fmt.printfln("Player %d received $%d for their %d %ss",
+			log.infof("Player %d received $%d for their %d %ss",
 				p.id, prize, p.bought[idx],
 				state.artists[idx].name)
 			p.strat.update(p.strat.ctx, Resource_Event {
@@ -608,5 +616,19 @@ play_round :: proc() {
 
 		state.round_played[idx] = 0
 		curr += 1
+	}
+
+	update_players(Round_End_Event {})
+}
+
+play_game :: proc() {
+	play_round()
+	for i in 2..=len(state.schedule.dealt) {
+		deal_round()
+		play_round()
+	}
+
+	for p in state.players {
+		log.infof("Player %d ended with $%d", p.id, p.money)
 	}
 }
