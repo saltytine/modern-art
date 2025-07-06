@@ -3,6 +3,12 @@ package main
 import "core:fmt"
 import "core:math/rand"
 
+strategies :: []struct { name: string, value: Strategy } {
+    { name = first_card_all_in, value = first_card_all_in },
+    { name = random_player.name, value = random_player },
+    { name = expected_return.name, value = expected_return }
+}
+
 Strategy_Setup :: struct {
 	id: uint,
 	conf: Config,

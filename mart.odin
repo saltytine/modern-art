@@ -1,10 +1,19 @@
 package main
 
 import "base:runtime"
+import "core:flags"
 import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:sort"
+
+Options :: struct {
+	// TODO: make this a string and parse it manually (current defaults to
+	// stdout
+	log_file: os.Handle `args:"file=rwct,perms=644"`,
+	log_file_set: bool,
+	strats: [dynamic]Strategy `args:"name=strategy,required=4<5"`,
+}
 
 Auction :: enum { Open, Offer, Secret, Fixed, Double }
 auction_names := [Auction]string {
@@ -118,35 +127,65 @@ get_card :: proc(card_id: uint) -> Card {
 	return Card{}
 }
 
-main :: proc() {
-	strats := []Strategy {
-		random_player,
-		random_player,
-		random_player,
-		expected_return,
+opt_parser :: proc (
+	data: rawptr,
+	data_type: typeid,
+	stream: string,
+	tag: string,
+) -> (
+	error: string,
+	handled: bool,
+	alloc_error: runtime.Allocator_Error
+) {
+	if data_type == Strategy {
+		handled = true
+		ptr := cast(^Strategy) data
+		for s in strategies {
+			if stream == s.name {
+				ptr^ = s.value
+				return
+			}
+		}
+
+		// TODO: list strats in msg
+		error = "Unknown strategy. Must be one of TODO: list strats"
 	}
 
-	mode := os.S_IRUSR | os.S_IWUSR | os.S_IRGRP | os.S_IROTH
-	flags := os.O_CREATE | os.O_TRUNC | os.O_RDWR
-	fd, err := os.open("log.txt", flags, mode)
-	// TODO: Wtf happened here before
+	return
+}
+
+opt_validator :: proc (
+	model: rawptr,
+	name: string,
+	value: any,
+	arg_tags: string,
+) -> (error: string) {
+	return
+}
+
+main :: proc() {
+	opts: Options
+	flags.register_type_setter(opt_parser)
+	flags.register_flag_checker(opt_validator)
+	flags.parse_or_exit(&opts, os.args, .Odin)
+
 	logger: runtime.Logger
-	if err == os.ERROR_NONE {
-		opts := bit_set[runtime.Logger_Option] { .Level }
-		logger = log.create_file_logger(fd, opt = opts)
+	if true {
+		log_opts := bit_set[runtime.Logger_Option] { .Level }
+		logger = log.create_file_logger(opts.log_file, opt = log_opts)
 	} else {
 		logger = log.nil_logger()
 	}
 	context.logger = logger
-	defer if err == os.ERROR_NONE {
+	defer if true {
 		log.destroy_file_logger(logger)
-		os.close(fd)
+		os.close(opts.log_file)
 	}
 
 	// TODO: remove this and do actual stats
-	wins := make([]uint, len(strats))
+	wins := make([]uint, len(opts.strats))
 	for i in 1..=1000 {
-		setup_game(mart_conf, strats);
+		setup_game(mart_conf, opts.strats[:]);
 		play_game()
 		sort.merge_sort_proc(state.players, proc(p, q: Player) -> int {
 			return q.money - p.money
