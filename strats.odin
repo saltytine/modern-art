@@ -12,11 +12,11 @@ Strategy_Setup :: struct {
 Strategy :: struct {
 	ctx: rawptr,
 	name: string,
-	init: proc(^rawptr, Strategy_Setup),
-	update: proc(rawptr, Event),
-	bid: proc(rawptr) -> int,
-	auction: proc(rawptr, Auction_Event, bool) -> Auction_Event,
-	deinit: proc(^rawptr),
+	init: proc(^Strategy, Strategy_Setup),
+	update: proc(Strategy, Event),
+	bid: proc(Strategy) -> int,
+	auction: proc(Strategy, Auction_Event, bool) -> Auction_Event,
+	deinit: proc(^Strategy),
 }
 
 FCAI_Ctx :: struct {
@@ -28,62 +28,62 @@ FCAI_Ctx :: struct {
 first_card_all_in :: Strategy {
 	ctx = nil,
 	name = "First Card, All In",
-	init = proc(ctx: ^rawptr, setup: Strategy_Setup) {
+	init = proc(self: ^Strategy, setup: Strategy_Setup) {
 		c := new(FCAI_Ctx)
 		c^ = FCAI_Ctx {
 			id = setup.id,
 			cards = make([dynamic]uint),
 			money = 0,
 		}
-		ctx^ = c
+		self.ctx = c
 	},
-	update = proc(ctx: rawptr, event: Event) {
-		us := cast(^FCAI_Ctx) ctx
+	update = proc(self: Strategy, event: Event) {
+		ctx := cast(^FCAI_Ctx) self.ctx
 		#partial switch ev in event {
 		case Resource_Event:
-			append(&us.cards, ..ev.cards)
-			us.money += ev.money
+			append(&ctx.cards, ..ev.cards)
+			ctx.money += ev.money
 			delete(ev.cards)
 		case Auction_Event:
-			for c, i in us.cards {
+			for c, i in ctx.cards {
 				if c == ev.card {
-					unordered_remove(&us.cards, i)
+					unordered_remove(&ctx.cards, i)
 					break
 				}
 			}
 			if !ev.is_double { return }
-			for c, i in us.cards {
+			for c, i in ctx.cards {
 				if c == ev.double {
-					unordered_remove(&us.cards, i)
+					unordered_remove(&ctx.cards, i)
 					break
 				}
 			}
 		}
 	},
-	bid = proc(ctx: rawptr) -> int {
-		us := cast(^FCAI_Ctx) ctx
-		return us.money
+	bid = proc(self: Strategy) -> int {
+		ctx := cast(^FCAI_Ctx) self.ctx
+		return ctx.money
 	},
-	auction = proc(ctx: rawptr, _: Auction_Event, _: bool) \
+	auction = proc(self: Strategy, _: Auction_Event, _: bool) \
 			-> Auction_Event {
-		us := cast(^FCAI_Ctx) ctx
-		if len(us.cards) > 0 {
+		ctx := cast(^FCAI_Ctx) self.ctx
+		if len(ctx.cards) > 0 {
 			return Auction_Event {
-				player = us.id,
-				card = us.cards[0],
+				player = ctx.id,
+				card = ctx.cards[0],
 				double = 0,
 				is_double = false,
-				price = us.money,
+				price = ctx.money,
 			}
 		}
 
 		return Auction_Event {}
 	},
-	deinit = proc(ctx: ^rawptr) {
-		us := cast(^FCAI_Ctx) ctx^
-		delete(us.cards)
-		free(us)
-		ctx^ = nil
+	deinit = proc(self: ^Strategy) {
+		ctx := cast(^FCAI_Ctx) self.ctx
+		delete(ctx.cards)
+		free(ctx)
+		self.ctx = nil
 	}
 }
 
@@ -96,54 +96,54 @@ Random_Ctx :: struct {
 random_player :: Strategy {
 	ctx = nil,
 	name = "Random",
-	init = proc(ctx: ^rawptr, setup: Strategy_Setup) {
+	init = proc(self: ^Strategy, setup: Strategy_Setup) {
 		c := new(Random_Ctx)
 		c^ = Random_Ctx {
 			id = setup.id,
 			cards = make([dynamic]uint),
 			money = 0,
 		}
-		ctx^ = c
+		self.ctx = c
 	},
-	update = proc(ctx: rawptr, event: Event) {
-		us := cast(^Random_Ctx) ctx
+	update = proc(self: Strategy, event: Event) {
+		ctx := cast(^Random_Ctx) self.ctx
 		#partial switch ev in event {
 		case Resource_Event:
-			append(&us.cards, ..ev.cards)
-			us.money += ev.money
+			append(&ctx.cards, ..ev.cards)
+			ctx.money += ev.money
 			delete(ev.cards)
 		case Auction_Event:
-			for c, i in us.cards {
+			for c, i in ctx.cards {
 				if c == ev.card {
-					unordered_remove(&us.cards, i)
+					unordered_remove(&ctx.cards, i)
 					break
 				}
 			}
 			if !ev.is_double { return }
-			for c, i in us.cards {
+			for c, i in ctx.cards {
 				if c == ev.double {
-					unordered_remove(&us.cards, i)
+					unordered_remove(&ctx.cards, i)
 					break
 				}
 			}
 		}
 	},
-	bid = proc(ctx: rawptr) -> int {
-		us := cast(^Random_Ctx) ctx
-		return us.money > 0 ? rand.int_max(us.money) : 0
+	bid = proc(self: Strategy) -> int {
+		ctx := cast(^Random_Ctx) self.ctx
+		return ctx.money > 0 ? rand.int_max(ctx.money) : 0
 	},
-	auction = proc(ctx: rawptr, auction: Auction_Event, second_ask: bool) \
-			-> Auction_Event {
-		us := cast(^Random_Ctx) ctx
-		price := us.money > 0 ? rand.int_max(us.money) : 0
+	auction = proc(self: Strategy, auction: Auction_Event, \
+			second_ask: bool) -> Auction_Event {
+		ctx := cast(^Random_Ctx) self.ctx
+		price := ctx.money > 0 ? rand.int_max(ctx.money) : 0
 		if second_ask {
 			card := get_card(auction.card)
-			for id in us.cards {
+			for id in ctx.cards {
 				tmp := get_card(id)
 				if tmp.type != .Double &&
 						tmp.artist == card.artist {
 					return Auction_Event {
-						player = us.id,
+						player = ctx.id,
 						card = auction.card,
 						double = tmp.id,
 						is_double = true,
@@ -154,14 +154,14 @@ random_player :: Strategy {
 			return auction
 		}
 
-		card := get_card(rand.choice(us.cards[:]))
+		card := get_card(rand.choice(ctx.cards[:]))
 		if card.type == .Double {
-			for id in us.cards {
+			for id in ctx.cards {
 				tmp := get_card(id)
 				if id != card.id && tmp.type != .Double &&
 						tmp.artist == card.artist {
 					return Auction_Event {
-						player = us.id,
+						player = ctx.id,
 						card = card.id,
 						double = tmp.id,
 						is_double = true,
@@ -172,117 +172,73 @@ random_player :: Strategy {
 		}
 
 		return Auction_Event {
-			player = us.id,
+			player = ctx.id,
 			card = card.id,
 			double = 0,
 			is_double = false,
 			price = price,
 		}
 	},
-	deinit = proc(ctx: ^rawptr) {
-		us := cast(^Random_Ctx) ctx^
-		delete(us.cards)
-		free(us)
-		ctx^ = nil
+	deinit = proc(self: ^Strategy) {
+		ctx := cast(^Random_Ctx) self.ctx
+		delete(ctx.cards)
+		free(ctx)
+		self.ctx = nil
 	}
 }
 
 ER_Ctx :: struct {
 	id: uint,
-	money: int,
-	cards: [dynamic]uint,
 	base_reward: []int,
 	past_reward: []int,
 	expected_reward: []int,
 	// TODO: Use a priority queue instead of sorting evey round??
 	num_auctioned: []uint,
 	auction: Auction_Event,
+	rnd: Strategy,
 }
 
 expected_return :: Strategy {
 	ctx = nil,
 	name = "Expected Return",
-	init = proc(ctx: ^rawptr, setup: Strategy_Setup) {
-		us := new(ER_Ctx)
-		us.id = setup.id
-		us.cards = make([dynamic]uint)
-		us.base_reward = make([]int, len(setup.conf.scores))
-		copy(us.base_reward, setup.conf.scores)
-		us.past_reward = make([]int, len(setup.conf.artists))
-		us.expected_reward = make([]int, len(setup.conf.artists))
-		us.num_auctioned = make([]uint, len(setup.conf.artists))
-		ctx^ = us
+	init = proc(self: ^Strategy, setup: Strategy_Setup) {
+		ctx := new(ER_Ctx)
+		ctx.id = setup.id
+		ctx.base_reward = make([]int, len(setup.conf.scores))
+		copy(ctx.base_reward, setup.conf.scores)
+		ctx.past_reward = make([]int, len(setup.conf.artists))
+		ctx.expected_reward = make([]int, len(setup.conf.artists))
+		ctx.num_auctioned = make([]uint, len(setup.conf.artists))
+		ctx.rnd = random_player
+		ctx.rnd->init(setup)
+		self.ctx = ctx
 	},
-	bid = proc(ctx: rawptr) -> int {
-		us := cast(^ER_Ctx) ctx
-		card := get_card(us.auction.card)
-		reward := us.expected_reward[card.artist]
-		if reward > 0 do reward += us.past_reward[card.artist]
-		return reward * (us.auction.is_double ? 2 : 1)
+	bid = proc(self: Strategy) -> int {
+		ctx := cast(^ER_Ctx) self.ctx
+		card := get_card(ctx.auction.card)
+		reward := ctx.expected_reward[card.artist]
+		if reward > 0 do reward += ctx.past_reward[card.artist]
+		return reward * (ctx.auction.is_double ? 2 : 1)
 	},
-	auction = proc(ctx: rawptr, auction: Auction_Event, second_ask: bool) \
-			-> Auction_Event {
-		us := cast(^ER_Ctx) ctx
-		price := us.money > 0 ? rand.int_max(us.money) : 0
-		if second_ask {
-			card := get_card(auction.card)
-			for id in us.cards {
-				tmp := get_card(id)
-				if tmp.type != .Double &&
-						tmp.artist == card.artist {
-					return Auction_Event {
-						player = us.id,
-						card = auction.card,
-						double = tmp.id,
-						is_double = true,
-						price = price,
-					}
-				}
-			}
-			return auction
-		}
-
-		card := get_card(rand.choice(us.cards[:]))
-		if card.type == .Double {
-			for id in us.cards {
-				tmp := get_card(id)
-				if id != card.id && tmp.type != .Double &&
-						tmp.artist == card.artist {
-					return Auction_Event {
-						player = us.id,
-						card = card.id,
-						double = tmp.id,
-						is_double = true,
-						price = price,
-					}
-				}
-			}
-		}
-
-		return Auction_Event {
-			player = us.id,
-			card = card.id,
-			double = 0,
-			is_double = false,
-			price = price,
-		}
+	auction = proc(self: Strategy, auction: Auction_Event, \
+			second_ask: bool) -> Auction_Event {
+		ctx := cast(^ER_Ctx) self.ctx
+		return ctx.rnd->auction(auction, second_ask)
 	},
-	update = proc(ctx: rawptr, event: Event) {
-		us := cast(^ER_Ctx) ctx
+	update = proc(self: Strategy, event: Event) {
+		ctx := cast(^ER_Ctx) self.ctx
 		#partial switch ev in event {
 		case Resource_Event:
-			append(&us.cards, ..ev.cards)
-			us.money += ev.money
-			delete(ev.cards)
+			ctx.rnd->update(event)
 		case Auction_Event:
-			us.auction = ev
+			ctx.auction = ev
 			card := get_card(ev.card)
-			us.num_auctioned[card.artist] += ev.is_double ? 2 : 1
-			for &v in us.expected_reward do v = 0
-			num_auctioned := make([]uint, len(us.num_auctioned))
+			ctx.num_auctioned[card.artist] += ev.is_double ? 2 : 1
+			for &v in ctx.expected_reward do v = 0
+			num_auctioned := make([]uint, len(ctx.num_auctioned))
 			defer delete(num_auctioned)
-			copy(num_auctioned, us.num_auctioned)
-			for reward in us.base_reward {
+			copy(num_auctioned, ctx.num_auctioned)
+			for reward in ctx.base_reward {
 				artist := 0
 				max := uint(0)
 				for na, idx in num_auctioned {
@@ -295,39 +251,27 @@ expected_return :: Strategy {
 					break
 				}
 
-				us.expected_reward[artist] = reward
+				ctx.expected_reward[artist] = reward
 				num_auctioned[artist] = 0
 			}
 
-			for c, i in us.cards {
-				if c == ev.card {
-					unordered_remove(&us.cards, i)
-					break
-				}
-			}
-			if !ev.is_double { return }
-			for c, i in us.cards {
-				if c == ev.double {
-					unordered_remove(&us.cards, i)
-					break
-				}
-			}
+			ctx.rnd->update(event)
 		case Round_End_Event:
-			for i in 0..<len(us.past_reward) {
-				us.past_reward[i] += us.expected_reward[i]
-				us.num_auctioned[i] = 0
-				us.expected_reward[i] = 0
+			for i in 0..<len(ctx.past_reward) {
+				ctx.past_reward[i] += ctx.expected_reward[i]
+				ctx.num_auctioned[i] = 0
+				ctx.expected_reward[i] = 0
 			}
 		}
 	},
-	deinit = proc(ctx: ^rawptr) {
-		us := cast(^ER_Ctx) ctx^
-		delete(us.cards)
-		delete(us.past_reward)
-		delete(us.expected_reward)
-		delete(us.base_reward)
-		delete(us.num_auctioned)
-		free(us)
-		ctx^ = nil
+	deinit = proc(self: ^Strategy) {
+		ctx := cast(^ER_Ctx) self.ctx
+		ctx.rnd->deinit();
+		delete(ctx.past_reward)
+		delete(ctx.expected_reward)
+		delete(ctx.base_reward)
+		delete(ctx.num_auctioned)
+		free(ctx)
+		self.ctx = nil
 	}
 }

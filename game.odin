@@ -58,7 +58,7 @@ is_valid_auction :: proc(auction: Auction_Event) -> string {
 
 update_players :: proc(ev: Event) {
 	for player in state.players {
-		player.strat.update(player.strat.ctx, ev)
+		player.strat->update(ev)
 	}
 }
 
@@ -137,7 +137,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 			make([dynamic]Card, 0, state.schedule.dealt[0].cards)
 		player.bought = make([]uint, len(conf.artists))
 		player.strat = strats[i]
-		player.strat.init(&player.strat.ctx, Strategy_Setup {
+		player.strat->init(Strategy_Setup {
 			id = player.id,
 			conf = conf,
 			num_players = len(state.players),
@@ -148,7 +148,7 @@ setup_game :: proc(conf: Config, strats: []Strategy) {
 
 packup_game :: proc() {
 	for &p in state.players {
-		p.strat.deinit(&p.strat.ctx)
+		p.strat->deinit()
 		delete(p.cards)
 		delete(p.bought)
 	}
@@ -176,7 +176,7 @@ deal_round :: proc() {
 			state.pos += 1
 		}
 		player.money += dealing.money
-		player.strat.update(player.strat.ctx, Resource_Event {
+		player.strat->update(Resource_Event {
 			cards = card_ids,
 			money = int(dealing.money),
 		})
@@ -193,8 +193,7 @@ run_auction :: proc() {
 
 	success := false
 	for num_tries in 1..=max_tries {
-		auction = auctioneer.strat.auction(
-			auctioneer.strat.ctx, Auction_Event{}, false)
+		auction = auctioneer.strat->auction(Auction_Event{}, false)
 		if auction.player != auctioneer.id {
 			log.errorf("Player %d attempted to auction on" +
 				" behalf of player %d",
@@ -245,7 +244,7 @@ run_auction :: proc() {
 			continue
 		}
 
-		
+
 		unordered_remove(&state.players[auctioneer_num].cards, card_num)
 		state.deck[auction.card].public = true
 		card_artist := state.deck[auction.card].artist
@@ -313,9 +312,8 @@ run_auction :: proc() {
 			return
 		}
 
-		
-		second_auction := auctioneer.strat.auction(
-			auctioneer.strat.ctx, auction, true)
+
+		second_auction := auctioneer.strat->auction(auction, true)
 		card_num, ok := find_card_num(auctioneer, second_auction.double)
 		err := is_valid_auction(second_auction)
 		defer delete(err)
@@ -365,7 +363,7 @@ run_auction :: proc() {
 			for i in 1..<num_players {
 				bidder_num := (winner + uint(i)) % num_players
 				bidder := state.players[bidder_num]
-				bid := bidder.strat.bid(bidder.strat.ctx)
+				bid := bidder.strat->bid()
 				if bid > bidder.money {
 					log.errorf("Player %d tried to bid" +
 						" $%d but they only have $%d",
@@ -389,7 +387,7 @@ run_auction :: proc() {
 			for i in 1..<num_players {
 				bidder_num := (winner + uint(i)) % num_players
 				bidder := state.players[bidder_num]
-				bid := bidder.strat.bid(bidder.strat.ctx)
+				bid := bidder.strat->bid()
 				if bid > bidder.money {
 					log.errorf("Player %d tried to bid" +
 						" $%d but they only have $%d",
@@ -408,7 +406,7 @@ run_auction :: proc() {
 					})
 					continue outer
 				}
-				
+
 			}
 
 			break outer
@@ -417,7 +415,7 @@ run_auction :: proc() {
 		for i in 1..=num_players {
 			bidder_num := (auctioneer_num + uint(i)) % num_players
 			bidder := state.players[bidder_num]
-			bid := bidder.strat.bid(bidder.strat.ctx)
+			bid := bidder.strat->bid()
 			if bid > bidder.money {
 				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
@@ -446,7 +444,7 @@ run_auction :: proc() {
 		for i in 1..<num_players {
 			bidder_num := (auctioneer_num + uint(i)) % num_players
 			bidder := state.players[bidder_num]
-			bid := bidder.strat.bid(bidder.strat.ctx)
+			bid := bidder.strat->bid()
 			if bid > bidder.money {
 				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
@@ -480,7 +478,7 @@ run_auction :: proc() {
 		for i in 0..<num_players {
 			bidder_num := (auctioneer_num + uint(i)) % num_players
 			bidder := state.players[bidder_num]
-			bid := bidder.strat.bid(bidder.strat.ctx)
+			bid := bidder.strat->bid()
 			if bid > bidder.money {
 				log.errorf("Player %d tried to bid $%d but" +
 					" they only have $%d", bidder.id, bid,
@@ -526,15 +524,11 @@ run_auction :: proc() {
 	}
 	state.players[winner].money -= winning_bid
 	wp := state.players[winner]
-	wp.strat.update(wp.strat.ctx, Resource_Event {
-		money = -winning_bid,
-	})
+	wp.strat->update(Resource_Event { money = -winning_bid })
 
 	if winner != auctioneer_num {
 		state.players[auctioneer_num].money += winning_bid
-		auctioneer.strat.update(auctioneer.strat.ctx, Resource_Event {
-			money = winning_bid,
-		})
+		auctioneer.strat->update(Resource_Event { money = winning_bid })
 	}
 
 }
@@ -609,9 +603,7 @@ play_round :: proc() {
 			log.infof("Player %d received $%d for their %d %ss",
 				p.id, prize, p.bought[idx],
 				state.artists[idx].name)
-			p.strat.update(p.strat.ctx, Resource_Event {
-				money = prize,
-			})
+			p.strat->update(Resource_Event { money = prize })
 		}
 
 		state.round_played[idx] = 0
